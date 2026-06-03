@@ -3,6 +3,10 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+const sgMail = require('@sendgrid/mail');
+
+// Initialize SendGrid
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 const app = express();
 
@@ -20,6 +24,7 @@ app.use(express.json());
 const AIRTABLE_BASE_ID = process.env.AIRTABLE_BASE_ID || 'appR4epAyspylO9Hr';
 const AIRTABLE_API_KEY = process.env.AIRTABLE_API_KEY;
 const STRIPE_CLIENT_ID = process.env.STRIPE_CLIENT_ID;
+const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || 'hello@influencergigs.xyz';
 const AIRTABLE_API_URL = 'https://api.airtable.com/v0';
 
 // Airtable helper function
@@ -43,9 +48,65 @@ const airtableCall = async (method, endpoint, data = null) => {
   }
 };
 
+// Email verification template
+const getVerificationEmailTemplate = (name, influencerId, verificationLink) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
+        .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 8px 8px; }
+        .cta-button { 
+          display: inline-block; 
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white; 
+          padding: 12px 30px; 
+          text-decoration: none; 
+          border-radius: 6px; 
+          margin: 20px 0;
+        }
+        .footer { text-align: center; padding: 20px; color: #999; font-size: 12px; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>Welcome to InfluencerGig! 🎬</h1>
+        </div>
+        <div class="content">
+          <p>Hi ${name},</p>
+          <p>Thank you for signing up! We're excited to have you on board.</p>
+          <p>Please verify your email address to complete your registration and start earning money by creating UGC videos.</p>
+          <center>
+            <a href="${verificationLink}" class="cta-button">Verify Email Address</a>
+          </center>
+          <p style="color: #999; font-size: 12px;">Or copy and paste this link in your browser:<br>${verificationLink}</p>
+          <hr style="border: none; border-top: 1px solid #ddd; margin: 30px 0;">
+          <p><strong>What's Next?</strong></p>
+          <ul>
+            <li>Browse 51+ products available</li>
+            <li>Create authentic UGC videos</li>
+            <li>Earn $10-50 per approved video</li>
+            <li>Get paid within 24 hours!</li>
+          </ul>
+          <p>If you have any questions, contact us at <a href="mailto:hello@influencergigs.xyz">hello@influencergigs.xyz</a></p>
+        </div>
+        <div class="footer">
+          <p>&copy; 2026 InfluencerGig. All rights reserved.</p>
+          <p><a href="https://www.influencergig.online/privacy-policy.html">Privacy Policy</a> | <a href="https://www.influencergig.online/terms-of-service.html">Terms of Service</a></p>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
 // ===== STRIPE CONNECT ENDPOINTS =====
 
-// Create Stripe Connect account for creator
 app.post('/api/creators/stripe-connect', async (req, res) => {
   const { email, displayName, influencerId } = req.body;
   
@@ -90,7 +151,6 @@ app.post('/api/creators/stripe-connect', async (req, res) => {
   }
 });
 
-// Check if creator's Stripe account is ready
 app.get('/api/creators/:influencerId/stripe-status', async (req, res) => {
   try {
     const influencerData = await airtableCall('GET', `Influencers/${req.params.influencerId}`);
@@ -144,31 +204,111 @@ app.get('/api/products/:id', async (req, res) => {
 
 // ===== INFLUENCER ENDPOINTS =====
 
+// Register new influencer with email verification
 app.post('/api/influencers/register', async (req, res) => {
   const { email, username, displayName, niche, followerCount, socialLinks } = req.body;
   
   try {
+    // Create verification token (simple approach - in production use JWT)
+    const verificationToken = Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+    
+    // Create influencer record
     const record = await airtableCall('POST', 'Influencers', {
       fields: {
         'Email': email,
         'Username': username,
         'Display Name': displayName,
-        'Niche': niche,
-        'Follower Count': followerCount,
-        'Social Links': socialLinks,
-        'Verification Status': 'Pending'
+        'Niche': niche || '',
+        'Follower Count': followerCount || 0,
+        'Social Links': socialLinks || '',
+        'Verification Status': 'Pending',
+        'Verification Token': verificationToken
       }
     });
+
+    // Build verification link
+    const verificationLink = `https://www.influencergigs.xyz/verify?token=${verificationToken}&email=${encodeURIComponent(email)}`;
+
+    // Send verification email
+    const emailTemplate = getVerificationEmailTemplate(displayName, record.id, verificationLink);
     
+    await sgMail.send({
+      to: email,
+      from: SENDGRID_FROM_EMAIL,
+      subject: 'Welcome to InfluencerGig - Verify Your Email',
+      html: emailTemplate,
+      replyTo: 'hello@influencergigs.xyz'
+    });
+
     res.json({
       id: record.id,
-      message: 'Influencer registered successfully'
+      message: 'Influencer registered successfully! Check your email to verify your account.',
+      verificationSent: true
     });
   } catch (error) {
+    console.error('Registration error:', error);
     res.status(500).json({ error: 'Failed to register influencer' });
   }
 });
 
+// Verify email
+app.post('/api/influencers/verify-email', async (req, res) => {
+  const { token, email } = req.body;
+  
+  try {
+    // Find influencer by email and token
+    const data = await airtableCall('GET', 'Influencers');
+    const influencer = data.records.find(r => 
+      r.fields['Email'] === email && r.fields['Verification Token'] === token
+    );
+
+    if (!influencer) {
+      return res.status(400).json({ error: 'Invalid verification token' });
+    }
+
+    // Update verification status
+    await airtableCall('PATCH', `Influencers/${influencer.id}`, {
+      fields: {
+        'Verification Status': 'Verified',
+        'Verification Token': '' // Clear token after use
+      }
+    });
+
+    // Send welcome email
+    const welcomeEmail = `
+      <html>
+      <body style="font-family: Arial, sans-serif;">
+        <p>Welcome aboard, ${influencer.fields['Display Name']}!</p>
+        <p>Your email has been verified. You can now:</p>
+        <ul>
+          <li>Browse available products</li>
+          <li>Create UGC videos</li>
+          <li>Submit videos for review</li>
+          <li>Earn $10-50 per approved video</li>
+        </ul>
+        <p><a href="https://www.influencergigs.xyz/dashboard" style="background: #667eea; color: white; padding: 10px 20px; text-decoration: none; border-radius: 6px;">Go to Dashboard</a></p>
+      </body>
+      </html>
+    `;
+
+    await sgMail.send({
+      to: email,
+      from: SENDGRID_FROM_EMAIL,
+      subject: 'Email Verified - Welcome to InfluencerGig!',
+      html: welcomeEmail
+    });
+
+    res.json({
+      success: true,
+      message: 'Email verified! You can now start creating videos.'
+    });
+  } catch (error) {
+    console.error('Verification error:', error);
+    res.status(500).json({ error: 'Failed to verify email' });
+  }
+});
+
+// Get influencer by email
 app.get('/api/influencers/:email', async (req, res) => {
   try {
     const data = await airtableCall('GET', 'Influencers');
@@ -232,7 +372,7 @@ app.get('/api/submissions/influencer/:influencerId', async (req, res) => {
   }
 });
 
-// ===== PAYMENT ENDPOINTS (DIRECT CHARGES) =====
+// ===== PAYMENT ENDPOINTS =====
 
 app.post('/api/payments/create', async (req, res) => {
   const { submissionId, influencerId, amount } = req.body;
@@ -370,4 +510,5 @@ const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`💳 Stripe Connect enabled for direct creator payouts`);
+  console.log(`📧 SendGrid email verification enabled`);
 });
