@@ -1,0 +1,24 @@
+{
+  "name": "influencer-gig-api",
+  "version": "1.0.0",
+  "description": "InfluencerGig API with authentication",
+  "main": "server-auth.js",
+  "scripts": {
+    "start": "node server-auth.js",
+    "dev": "nodemon server-auth.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "airtable": "^2.1.0",
+    "jsonwebtoken": "^9.1.2",
+    "bcryptjs": "^2.4.3",
+    "@sendgrid/mail": "^8.1.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
