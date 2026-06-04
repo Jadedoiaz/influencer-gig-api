@@ -293,6 +293,81 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
+// ===== CREATOR SUBMIT CONTENT =====
+app.post('/api/submit-content', authenticateToken, async (req, res) => {
+  try {
+    const { productId, videoUrl, caption } = req.body;
+
+    if (!productId || !videoUrl) {
+      return res.status(400).json({ error: 'Product and video URL are required' });
+    }
+
+    // Find the influencer record
+    const influencers = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (influencers.length === 0) {
+      return res.status(404).json({ error: 'Influencer not found' });
+    }
+
+    const influencerId = influencers[0].id;
+    const submissionId = 'SUB-' + Date.now();
+
+    const record = await base('Submissions').create({
+      'Submission ID': submissionId,
+      'Video URL': videoUrl,
+      'Caption': caption || '',
+      'Submission Date': new Date().toISOString().split('T')[0],
+      'Status': 'Pending',
+      'Influencer': [influencerId],
+      'Product': [productId]
+    });
+
+    res.json({
+      message: 'Content submitted successfully',
+      submissionId: submissionId,
+      recordId: record.id
+    });
+  } catch (error) {
+    console.error('Submit content error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== CREATOR GET MY SUBMISSIONS =====
+app.get('/api/my-submissions', authenticateToken, async (req, res) => {
+  try {
+    const influencers = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (influencers.length === 0) {
+      return res.json([]);
+    }
+
+    const influencerId = influencers[0].id;
+    const allSubmissions = await base('Submissions').select().all();
+
+    const mySubmissions = allSubmissions
+      .filter(record => {
+        const linked = record.fields['Influencer'];
+        return linked && linked.includes(influencerId);
+      })
+      .map(record => ({
+        id: record.id,
+        ...record.fields
+      }));
+
+    res.json(mySubmissions);
+  } catch (error) {
+    console.error('My submissions error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===== HEALTH CHECK =====
 app.get('/health', (req, res) => {
   res.json({ status: 'OK' });
