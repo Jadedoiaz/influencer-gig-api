@@ -425,6 +425,85 @@ app.post('/api/admin/reject-submission', authenticateToken, async (req, res) => 
   }
 });
 
+// ===== CREATE TEST STRIPE ACCOUNT =====
+app.post('/api/admin/create-test-stripe-account', authenticateToken, async (req, res) => {
+  try {
+    const { creatorEmail } = req.body;
+
+    if (!creatorEmail) {
+      return res.status(400).json({ error: 'Creator email is required' });
+    }
+
+    // Check if admin
+    const adminRecords = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (adminRecords.length === 0 || !adminRecords[0].fields['Is Admin']) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    // Find the creator
+    const creatorRecords = await base('Influencers').select({
+      filterByFormula: `{Email} = '${creatorEmail}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (creatorRecords.length === 0) {
+      return res.status(404).json({ error: 'Creator not found' });
+    }
+
+    const creatorRecord = creatorRecords[0];
+    const creatorId = creatorRecord.id;
+
+    // Create Stripe Connect test account
+    try {
+      const account = await stripe.accounts.create({
+        type: 'express',
+        country: 'US',
+        email: creatorEmail,
+        capabilities: {
+          transfers: { requested: true }
+        }
+      });
+
+      const stripeAccountId = account.id;
+
+      // Save the account ID to Airtable
+      await base('Influencers').update(creatorId, {
+        'Stripe Account ID': stripeAccountId
+      });
+
+      // Send confirmation email
+      await sgMail.send({
+        to: creatorEmail,
+        from: process.env.SENDGRID_FROM_EMAIL,
+        subject: 'Your Stripe Account is Ready! 💳',
+        html: `
+          <h2>Welcome to Payouts!</h2>
+          <p>Your Stripe Express account has been created and is ready to receive payouts.</p>
+          <p>Account ID: <code>${stripeAccountId}</code></p>
+          <p>When your submissions are approved, funds will automatically transfer to this account.</p>
+          <p><a href="${process.env.FRONTEND_URL}/dashboard">Go to Dashboard</a></p>
+        `
+      });
+
+      res.json({
+        message: 'Stripe test account created successfully',
+        stripeAccountId: stripeAccountId,
+        creatorEmail: creatorEmail
+      });
+    } catch (stripeErr) {
+      console.error('Stripe account creation error:', stripeErr);
+      res.status(500).json({ error: 'Failed to create Stripe account: ' + stripeErr.message });
+    }
+  } catch (error) {
+    console.error('Create account error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get all submissions (admin only)
 app.get('/api/submissions', authenticateToken, async (req, res) => {
   try {
