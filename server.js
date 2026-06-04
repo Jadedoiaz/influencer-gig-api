@@ -651,6 +651,37 @@ app.post('/api/admin/create-test-stripe-account', authenticateToken, async (req,
   }
 });
 
+app.get('/api/my-payouts', authenticateToken, async (req, res) => {
+  try {
+    const influencers = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (influencers.length === 0) {
+      return res.json([]);
+    }
+
+    const influencerId = influencers[0].id;
+    const allPayouts = await base('Payouts').select().all();
+
+    const myPayouts = allPayouts
+      .filter(record => {
+        const linked = record.fields['Influencer'];
+        return linked && linked.includes(influencerId);
+      })
+      .map(record => ({
+        id: record.id,
+        ...record.fields
+      }));
+
+    res.json(myPayouts);
+  } catch (error) {
+    console.error('My payouts error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Get all submissions (admin only)
 app.get('/api/submissions', authenticateToken, async (req, res) => {
   try {
