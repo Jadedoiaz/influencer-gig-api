@@ -305,10 +305,6 @@ app.post('/api/admin/approve-submission', authenticateToken, async (req, res) =>
     const influencer = await base('Influencers').find(influencerId);
     const stripeAccountId = influencer.fields['Stripe Account ID'];
 
-    if (!stripeAccountId) {
-      return res.status(400).json({ error: 'Creator does not have a Stripe account connected' });
-    }
-
     // Update submission status
     await base('Submissions').update(submissionId, {
       'Status': 'Approved',
@@ -320,52 +316,71 @@ app.post('/api/admin/approve-submission', authenticateToken, async (req, res) =>
     const payoutRecord = await base('Payouts').create({
       'Payout ID': payoutId,
       'Total Amount': rewardAmount,
-      'Status': 'Processing',
+      'Status': stripeAccountId ? 'Processing' : 'Pending',
       'Payout Date': new Date().toISOString().split('T')[0],
+      'Notes': stripeAccountId ? '' : 'Creator has no Stripe account yet - payout pending',
       'Influencer': [influencerId]
     });
 
-    // Transfer funds to creator via Stripe Connect
-    try {
-      const transfer = await stripe.transfers.create({
-        amount: Math.round(rewardAmount * 100), // Convert to cents
-        currency: 'usd',
-        destination: stripeAccountId,
-        description: `InfluencerGig payout for submission ${submission.fields['Submission ID']}`
-      });
+    // If creator has Stripe account, transfer funds
+    if (stripeAccountId) {
+      try {
+        const transfer = await stripe.transfers.create({
+          amount: Math.round(rewardAmount * 100),
+          currency: 'usd',
+          destination: stripeAccountId,
+          description: `InfluencerGig payout for submission ${submission.fields['Submission ID']}`
+        });
 
-      // Update payout with Stripe transaction ID
-      await base('Payouts').update(payoutRecord.id, {
-        'Status': 'Completed',
-        'Stripe Transaction ID': transfer.id
-      });
+        await base('Payouts').update(payoutRecord.id, {
+          'Status': 'Completed',
+          'Stripe Transaction ID': transfer.id
+        });
 
-      // Send email to creator
+        await sgMail.send({
+          to: influencer.fields.Email,
+          from: process.env.SENDGRID_FROM_EMAIL,
+          subject: 'You\'ve Earned a Payout! 💰',
+          html: `
+            <h2>Great news!</h2>
+            <p>Your submission has been approved and you've earned <strong>$${rewardAmount.toFixed(2)}</strong>!</p>
+            <p>The funds will be transferred to your connected Stripe account within 1-2 business days.</p>
+            <p><a href="${process.env.FRONTEND_URL}/dashboard">View your dashboard</a></p>
+          `
+        });
+
+        res.json({
+          message: 'Submission approved and payout processed',
+          payoutId: payoutId,
+          transferId: transfer.id
+        });
+      } catch (stripeError) {
+        await base('Payouts').update(payoutRecord.id, {
+          'Status': 'Failed',
+          'Notes': 'Stripe transfer failed: ' + stripeError.message
+        });
+
+        console.error('Stripe transfer error:', stripeError);
+        res.status(500).json({ error: 'Payment processing failed: ' + stripeError.message });
+      }
+    } else {
+      // No Stripe account - approve but hold payout
       await sgMail.send({
         to: influencer.fields.Email,
         from: process.env.SENDGRID_FROM_EMAIL,
-        subject: 'You\'ve Earned a Payout! 💰',
+        subject: 'Your Submission was Approved! ✅',
         html: `
           <h2>Great news!</h2>
           <p>Your submission has been approved and you've earned <strong>$${rewardAmount.toFixed(2)}</strong>!</p>
-          <p>The funds will be transferred to your connected Stripe account within 1-2 business days.</p>
+          <p>To receive your payout, please connect your Stripe account in your dashboard.</p>
           <p><a href="${process.env.FRONTEND_URL}/dashboard">View your dashboard</a></p>
         `
       });
 
       res.json({
-        message: 'Submission approved and payout processed',
-        payoutId: payoutId,
-        transferId: transfer.id
+        message: 'Submission approved! Payout pending - creator needs to connect Stripe account.',
+        payoutId: payoutId
       });
-    } catch (stripeError) {
-      // If Stripe transfer fails, mark as failed
-      await base('Payouts').update(payoutRecord.id, {
-        'Status': 'Failed'
-      });
-
-      console.error('Stripe transfer error:', stripeError);
-      res.status(500).json({ error: 'Payment processing failed: ' + stripeError.message });
     }
   } catch (error) {
     console.error('Approve submission error:', error);
