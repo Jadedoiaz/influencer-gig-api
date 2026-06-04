@@ -425,6 +425,138 @@ app.post('/api/admin/reject-submission', authenticateToken, async (req, res) => 
   }
 });
 
+// ===== FORGOT PASSWORD =====
+app.post('/api/auth/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const records = await base('Influencers').select({
+      filterByFormula: `{Email} = '${email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (records.length === 0) {
+      return res.status(404).json({ error: 'Email not found' });
+    }
+
+    const record = records[0];
+    const resetToken = Math.random().toString(36).substr(2, 9);
+
+    // Save reset token
+    await base('Influencers').update(record.id, {
+      'Reset Token': resetToken,
+      'Reset Token Expires': new Date(Date.now() + 3600000).toISOString()
+    });
+
+    const resetLink = `${process.env.FRONTEND_URL || 'https://www.influencergigs.xyz'}/reset-password?token=${resetToken}&email=${email}`;
+
+    await sgMail.send({
+      to: email,
+      from: process.env.SENDGRID_FROM_EMAIL,
+      subject: 'Reset Your InfluencerGig Password',
+      html: `
+        <h2>Password Reset Request</h2>
+        <p>Click the link below to reset your password:</p>
+        <a href="${resetLink}">Reset Password</a>
+        <p>Or copy this link: ${resetLink}</p>
+        <p><small>This link expires in 1 hour</small></p>
+      `
+    });
+
+    res.json({ message: 'Reset link sent to your email' });
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== RESET PASSWORD =====
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { email, token, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    const records = await base('Influencers').select({
+      filterByFormula: `{Email} = '${email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (records.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const record = records[0];
+    const storedToken = record.fields['Reset Token'];
+    const tokenExpiry = record.fields['Reset Token Expires'];
+
+    if (storedToken !== token || !tokenExpiry || new Date(tokenExpiry) < new Date()) {
+      return res.status(400).json({ error: 'Invalid or expired reset token' });
+    }
+
+    const hashedPassword = await bcryptjs.hash(newPassword, 10);
+
+    await base('Influencers').update(record.id, {
+      'Password Hash': hashedPassword,
+      'Reset Token': '',
+      'Reset Token Expires': ''
+    });
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ===== ADMIN SET PASSWORD FOR CREATOR =====
+app.post('/api/admin/set-creator-password', authenticateToken, async (req, res) => {
+  try {
+    const { creatorEmail, newPassword } = req.body;
+
+    if (!newPassword || newPassword.length < 8) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    }
+
+    // Check if admin
+    const adminRecords = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (adminRecords.length === 0 || !adminRecords[0].fields['Is Admin']) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    // Find creator
+    const creatorRecords = await base('Influencers').select({
+      filterByFormula: `{Email} = '${creatorEmail}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (creatorRecords.length === 0) {
+      return res.status(404).json({ error: 'Creator not found' });
+    }
+
+    const creator = creatorRecords[0];
+    const hashedPassword = await bcryptjs.hash(newPassword, 10);
+
+    await base('Influencers').update(creator.id, {
+      'Password Hash': hashedPassword
+    });
+
+    res.json({ 
+      message: 'Password set successfully',
+      creatorEmail: creatorEmail
+    });
+  } catch (error) {
+    console.error('Set password error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===== CREATE TEST STRIPE ACCOUNT =====
 app.post('/api/admin/create-test-stripe-account', authenticateToken, async (req, res) => {
   try {
