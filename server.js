@@ -291,25 +291,18 @@ app.post('/api/admin/approve-submission', authenticateToken, async (req, res) =>
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    // Find the submission
-    const submissions = await base('Submissions').select({
-      filterByFormula: `{id} = '${submissionId}'`,
-      maxRecords: 1
-    }).firstPage();
-
-    if (submissions.length === 0) {
+    // Find the submission by its record ID
+    let submission;
+    try {
+      submission = await base('Submissions').find(submissionId);
+    } catch (findErr) {
       return res.status(404).json({ error: 'Submission not found' });
     }
 
-    const submission = submissions[0];
     const influencerId = submission.fields['Influencer'][0];
 
-    // Get influencer details
-    const influencerRecords = await base('Influencers').select({
-      recordIds: [influencerId]
-    }).firstPage();
-
-    const influencer = influencerRecords[0];
+    // Get influencer details by record ID
+    const influencer = await base('Influencers').find(influencerId);
     const stripeAccountId = influencer.fields['Stripe Account ID'];
 
     if (!stripeAccountId) {
@@ -395,16 +388,13 @@ app.post('/api/admin/reject-submission', authenticateToken, async (req, res) => 
       return res.status(403).json({ error: 'Admin access required' });
     }
 
-    // Find submission
-    const submissions = await base('Submissions').select({
-      recordIds: [submissionId]
-    }).firstPage();
-
-    if (submissions.length === 0) {
+    // Find submission by its record ID
+    let submission;
+    try {
+      submission = await base('Submissions').find(submissionId);
+    } catch (findErr) {
       return res.status(404).json({ error: 'Submission not found' });
     }
-
-    const submission = submissions[0];
 
     // Update submission status
     await base('Submissions').update(submissionId, {
@@ -414,11 +404,7 @@ app.post('/api/admin/reject-submission', authenticateToken, async (req, res) => 
 
     // Get influencer and send notification
     const influencerId = submission.fields['Influencer'][0];
-    const influencerRecords = await base('Influencers').select({
-      recordIds: [influencerId]
-    }).firstPage();
-
-    const influencer = influencerRecords[0];
+    const influencer = await base('Influencers').find(influencerId);
 
     await sgMail.send({
       to: influencer.fields.Email,
