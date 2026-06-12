@@ -710,7 +710,7 @@ app.get('/api/submissions', authenticateToken, async (req, res) => {
 app.get('/api/products', async (req, res) => {
   try {
     const products = await base('Products').select({
-      fields: ['Product Name', 'ASIN', 'Price', 'Image URL', 'Affiliate Link', 'Category']
+      fields: ['Product Name', 'ASIN', 'Price', 'Image URL', 'Affiliate Link', 'Category', 'Content Brief', 'Key Selling Points', 'Post Platforms', 'Reward Amount']
     }).all();
 
     const formattedProducts = products.map(record => ({
@@ -725,6 +725,116 @@ app.get('/api/products', async (req, res) => {
 });
 
 // Health check
+// ===== SEND CONTENT BRIEF EMAIL =====
+app.post('/api/send-brief', authenticateToken, async (req, res) => {
+  try {
+    const { productId } = req.body;
+
+    if (!productId) {
+      return res.status(400).json({ error: 'Product ID is required' });
+    }
+
+    // Get creator info
+    const creators = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (creators.length === 0) {
+      return res.status(404).json({ error: 'Creator not found' });
+    }
+
+    const creator = creators[0];
+
+    // Get product info
+    const product = await base('Products').find(productId);
+    const fields = product.fields;
+
+    const productName = fields['Product Name'] || 'Product';
+    const affiliateLink = fields['Affiliate Link'] || '';
+    const contentBrief = fields['Content Brief'] || 'Create an authentic video reviewing this product.';
+    const keyPoints = fields['Key Selling Points'] || '';
+    const platforms = fields['Post Platforms'] ? fields['Post Platforms'].map(p => p.name || p).join(', ') : 'TikTok, Instagram Reels';
+    const rewardAmount = fields['Reward Amount'] ? `$${fields['Reward Amount'].toFixed(2)}` : 'TBD';
+    const price = fields['Price'] ? `$${fields['Price'].toFixed(2)}` : '';
+    const imageUrl = fields['Image URL'] || '';
+
+    await sgMail.send({
+      to: creator.fields.Email,
+      from: process.env.SENDGRID_FROM_EMAIL,
+      subject: `📋 Your Content Brief: ${productName}`,
+      html: `
+        <div style="font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; color: #111827;">
+          <div style="background: #7c3aed; padding: 24px; border-radius: 10px 10px 0 0; text-align: center;">
+            <h1 style="color: #fff; margin: 0; font-size: 22px;">Your Content Brief</h1>
+            <p style="color: #e9d5ff; margin: 8px 0 0; font-size: 14px;">Everything you need to create great content</p>
+          </div>
+
+          <div style="background: #fff; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 10px 10px; padding: 24px;">
+
+            ${imageUrl ? `<div style="text-align: center; margin-bottom: 20px;"><img src="${imageUrl}" alt="${productName}" style="max-width: 200px; border-radius: 8px;" /></div>` : ''}
+
+            <h2 style="font-size: 18px; color: #111827; margin-bottom: 4px;">${productName}</h2>
+            ${price ? `<p style="color: #6b7280; font-size: 14px; margin-bottom: 16px;">Price: ${price}</p>` : ''}
+
+            <div style="background: #f3f4f6; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 8px; text-transform: uppercase;">💰 Your Reward</h3>
+              <p style="font-size: 24px; font-weight: bold; color: #7c3aed; margin: 0;">${rewardAmount}</p>
+              <p style="font-size: 12px; color: #6b7280; margin: 4px 0 0;">Paid upon approval of your submission</p>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 8px; text-transform: uppercase;">📹 Content Brief</h3>
+              <p style="font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-line;">${contentBrief}</p>
+            </div>
+
+            ${keyPoints ? `
+            <div style="margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 8px; text-transform: uppercase;">✅ Key Selling Points</h3>
+              <p style="font-size: 14px; color: #374151; line-height: 1.6; white-space: pre-line;">${keyPoints}</p>
+            </div>` : ''}
+
+            <div style="margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #374151; margin-bottom: 8px; text-transform: uppercase;">📱 Where to Post</h3>
+              <p style="font-size: 14px; color: #374151;">${platforms}</p>
+            </div>
+
+            ${affiliateLink ? `
+            <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #065f46; margin-bottom: 8px; text-transform: uppercase;">🔗 Affiliate Link for Your Bio</h3>
+              <p style="font-size: 12px; color: #374151; margin-bottom: 8px;">Add this link to your bio before posting:</p>
+              <a href="${affiliateLink}" style="font-size: 13px; color: #7c3aed; word-break: break-all;">${affiliateLink}</a>
+              <p style="font-size: 11px; color: #6b7280; margin-top: 8px;">⚠️ Do not modify this link — it tracks purchases for your commission</p>
+            </div>` : ''}
+
+            <div style="background: #fef3c7; border: 1px solid #fcd34d; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+              <h3 style="font-size: 14px; font-weight: 700; color: #92400e; margin-bottom: 8px;">📋 Submission Checklist</h3>
+              <ul style="font-size: 13px; color: #374151; padding-left: 20px; margin: 0; line-height: 2;">
+                <li>Video is 30–60 seconds long</li>
+                <li>Product is clearly visible on camera</li>
+                <li>Call-to-action included at the end</li>
+                <li>Affiliate link is in your bio before posting</li>
+                <li>Submit your video URL in your dashboard</li>
+              </ul>
+            </div>
+
+            <div style="text-align: center;">
+              <a href="${process.env.FRONTEND_URL}/dashboard" style="display: inline-block; padding: 12px 28px; background: #7c3aed; color: #fff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 14px;">
+                Submit Your Video
+              </a>
+            </div>
+          </div>
+        </div>
+      `
+    });
+
+    res.json({ message: 'Brief sent to your email!' });
+  } catch (error) {
+    console.error('Send brief error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/health', (req, res) => {
   res.json({ status: 'OK' });
 });
