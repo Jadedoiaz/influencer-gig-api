@@ -710,12 +710,13 @@ app.get('/api/submissions', authenticateToken, async (req, res) => {
 app.get('/api/products', async (req, res) => {
   try {
     const products = await base('Products').select({
-      fields: ['Product Name', 'ASIN', 'Price', 'Image URL', 'Affiliate Link', 'Category', 'Content Brief', 'Key Selling Points', 'Post Platforms', 'Reward Amount']
+      fields: ['Product Name', 'ASIN', 'Price', 'Image URL', 'Affiliate Link', 'Category', 'Content Brief', 'Key Selling Points', 'Post Platforms', 'Reward Amount', 'Submissions']
     }).all();
 
     const formattedProducts = products.map(record => ({
       id: record.id,
-      ...record.fields
+      ...record.fields,
+      submissionCount: record.fields['Submissions'] ? record.fields['Submissions'].length : 0
     }));
 
     res.json(formattedProducts);
@@ -724,8 +725,165 @@ app.get('/api/products', async (req, res) => {
   }
 });
 
-// Health check
-// ===== SEND CONTENT BRIEF EMAIL =====
+// ===== WEEKLY PRODUCT EMAIL =====
+app.post('/api/admin/send-weekly-email', authenticateToken, async (req, res) => {
+  try {
+    // Admin only
+    const adminRecords = await base('Influencers').select({
+      filterByFormula: `{Email} = '${req.user.email}'`,
+      maxRecords: 1
+    }).firstPage();
+
+    if (adminRecords.length === 0 || !adminRecords[0].fields['Is Admin']) {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    // Get all verified creators
+    const creators = await base('Influencers').select({
+      filterByFormula: `{Verification Status} = 'Verified'`
+    }).all();
+
+    if (creators.length === 0) {
+      return res.json({ message: 'No verified creators to email', sent: 0 });
+    }
+
+    // Get newest products (last 7 days or top 6 if none new)
+    const allProducts = await base('Products').select({
+      fields: ['Product Name', 'Price', 'Image URL', 'Affiliate Link', 'Category', 'Reward Amount', 'Added Date'],
+      sort: [{ field: 'Added Date', direction: 'desc' }],
+      maxRecords: 6
+    }).all();
+
+    if (allProducts.length === 0) {
+      return res.json({ message: 'No products found', sent: 0 });
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || 'https://www.influencergigs.xyz';
+    const today = new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    // Build product rows for email
+    const productRows = allProducts.map(p => {
+      const name = p.fields['Product Name'] || 'Product';
+      const price = p.fields['Price'] ? `$${p.fields['Price'].toFixed(2)}` : '';
+      const reward = p.fields['Reward Amount'] ? `$${p.fields['Reward Amount'].toFixed(2)}` : 'TBD';
+      const image = p.fields['Image URL'] || '';
+      const category = p.fields['Category'] ? (typeof p.fields['Category'] === 'object' ? p.fields['Category'].name : p.fields['Category']) : '';
+
+      return `
+        <tr>
+          <td style="padding: 16px; border-bottom: 1px solid #e5e7eb; vertical-align: middle;">
+            ${image ? `<img src="${image}" alt="${name}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 6px;" />` : '<div style="width:60px;height:60px;background:#f3f4f6;border-radius:6px;"></div>'}
+          </td>
+          <td style="padding: 16px; border-bottom: 1px solid #e5e7eb; vertical-align: middle;">
+            <p style="font-size: 14px; font-weight: 600; color: #111827; margin: 0 0 4px;">${name}</p>
+            ${category ? `<span style="font-size: 11px; color: #6b7280; background: #f3f4f6; padding: 2px 8px; border-radius: 10px;">${category}</span>` : ''}
+            ${price ? `<p style="font-size: 13px; color: #6b7280; margin: 4px 0 0;">Price: ${price}</p>` : ''}
+          </td>
+          <td style="padding: 16px; border-bottom: 1px solid #e5e7eb; vertical-align: middle; text-align: center;">
+            <p style="font-size: 20px; font-weight: 800; color: #7c3aed; margin: 0;">${reward}</p>
+            <p style="font-size: 11px; color: #6b7280; margin: 2px 0 0;">reward</p>
+          </td>
+          <td style="padding: 16px; border-bottom: 1px solid #e5e7eb; vertical-align: middle; text-align: center;">
+            <a href="${frontendUrl}/dashboard" style="display: inline-block; padding: 8px 16px; background: #7c3aed; color: #fff; text-decoration: none; border-radius: 6px; font-size: 12px; font-weight: 600;">Create Video</a>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    const emailHtml = `
+      <div style="font-family: system-ui, sans-serif; max-width: 640px; margin: 0 auto; color: #111827;">
+
+        <!-- Header -->
+        <div style="background: linear-gradient(135deg, #7c3aed, #5b21b6); padding: 32px 24px; border-radius: 10px 10px 0 0; text-align: center;">
+          <h1 style="color: #fff; font-size: 24px; margin: 0 0 8px;">🎬 This Week on InfluencerGig</h1>
+          <p style="color: rgba(255,255,255,0.85); font-size: 14px; margin: 0;">${today}</p>
+        </div>
+
+        <!-- Intro -->
+        <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-top: none; padding: 24px;">
+          <p style="font-size: 15px; color: #374151; margin: 0;">Hey Creator! 👋 Here are the latest products available on InfluencerGig this week. Pick one you love, follow the content brief, and submit your video to earn your reward.</p>
+        </div>
+
+        <!-- Products Table -->
+        <div style="background: #fff; border: 1px solid #e5e7eb; border-top: none;">
+          <div style="padding: 20px 24px 8px; border-bottom: 1px solid #e5e7eb;">
+            <h2 style="font-size: 16px; font-weight: 700; color: #111827; margin: 0;">🛍️ Products Available Now</h2>
+          </div>
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr style="background: #f9fafb;">
+                <th style="padding: 10px 16px; text-align: left; font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600;"></th>
+                <th style="padding: 10px 16px; text-align: left; font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600;">Product</th>
+                <th style="padding: 10px 16px; text-align: center; font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600;">Your Reward</th>
+                <th style="padding: 10px 16px; text-align: center; font-size: 11px; color: #6b7280; text-transform: uppercase; font-weight: 600;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${productRows}
+            </tbody>
+          </table>
+        </div>
+
+        <!-- CTA -->
+        <div style="background: #f9fafb; border: 1px solid #e5e7eb; border-top: none; padding: 24px; text-align: center;">
+          <p style="font-size: 14px; color: #6b7280; margin: 0 0 16px;">Browse all 51+ products on the marketplace</p>
+          <a href="${frontendUrl}/marketplace" style="display: inline-block; padding: 14px 32px; background: #7c3aed; color: #fff; text-decoration: none; border-radius: 8px; font-size: 15px; font-weight: 700;">View Full Marketplace →</a>
+        </div>
+
+        <!-- Tips -->
+        <div style="background: #f5f3ff; border: 1px solid #ddd6fe; border-radius: 0 0 10px 10px; padding: 20px 24px;">
+          <h3 style="font-size: 13px; font-weight: 700; color: #7c3aed; margin: 0 0 10px; text-transform: uppercase;">💡 Quick Reminder</h3>
+          <ul style="font-size: 13px; color: #374151; padding-left: 18px; margin: 0; line-height: 1.8;">
+            <li>Put the affiliate link in your bio <strong>before</strong> posting</li>
+            <li>Follow the content brief closely for faster approval</li>
+            <li>End every video with the call to action from the brief</li>
+            <li>Most submissions are approved within 24 hours</li>
+          </ul>
+        </div>
+
+        <!-- Footer -->
+        <div style="padding: 20px 24px; text-align: center;">
+          <p style="font-size: 12px; color: #9ca3af; margin: 0;">© 2026 InfluencerGig · <a href="${frontendUrl}/dashboard" style="color: #7c3aed;">Your Dashboard</a> · <a href="https://www.influencergig.online" style="color: #7c3aed;">Home</a></p>
+        </div>
+      </div>
+    `;
+
+    // Send to all verified creators
+    let sent = 0;
+    let failed = 0;
+
+    for (const creator of creators) {
+      const email = creator.fields.Email;
+      const name = creator.fields['Display Name'] || creator.fields.Username || 'Creator';
+      if (!email) continue;
+
+      try {
+        await sgMail.send({
+          to: email,
+          from: process.env.SENDGRID_FROM_EMAIL,
+          subject: `🎬 New Products This Week — Up to $50 Per Video`,
+          html: emailHtml.replace('Hey Creator! 👋', `Hey ${name}! 👋`)
+        });
+        sent++;
+      } catch (emailErr) {
+        console.error(`Failed to send to ${email}:`, emailErr.message);
+        failed++;
+      }
+    }
+
+    res.json({
+      message: `Weekly email sent successfully`,
+      sent,
+      failed,
+      total: creators.length
+    });
+  } catch (error) {
+    console.error('Weekly email error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.post('/api/send-brief', authenticateToken, async (req, res) => {
   try {
     const { productId } = req.body;
