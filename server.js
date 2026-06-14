@@ -257,17 +257,36 @@ app.get('/api/my-submissions', authenticateToken, async (req, res) => {
     const influencerId = influencers[0].id;
     const allSubmissions = await base('Submissions').select().all();
 
-    const mySubmissions = allSubmissions
-      .filter(record => {
-        const linked = record.fields['Influencer'];
-        return linked && linked.includes(influencerId);
-      })
-      .map(record => ({
-        id: record.id,
-        ...record.fields
-      }));
+    const mySubmissions = allSubmissions.filter(record => {
+      const linked = record.fields['Influencer'];
+      return linked && linked.includes(influencerId);
+    });
 
-    res.json(mySubmissions);
+    // Look up product names for each submission
+    const enriched = await Promise.all(mySubmissions.map(async (record) => {
+      let productName = 'Unknown Product';
+      let productImage = '';
+      const productIds = record.fields['Product'];
+
+      if (productIds && productIds.length > 0) {
+        try {
+          const product = await base('Products').find(productIds[0]);
+          productName = product.fields['Product Name'] || 'Unknown Product';
+          productImage = product.fields['Image URL'] || '';
+        } catch (e) {
+          // Product not found — keep defaults
+        }
+      }
+
+      return {
+        id: record.id,
+        ...record.fields,
+        'Product Name': productName,
+        'Product Image': productImage
+      };
+    }));
+
+    res.json(enriched);
   } catch (error) {
     console.error('My submissions error:', error);
     res.status(500).json({ error: error.message });
